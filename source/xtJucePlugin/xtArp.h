@@ -1,5 +1,9 @@
 #pragma once
+
 #include "jucePluginLib/event.h"
+
+#include <vector>
+#include <cstdint>
 
 namespace juce
 {
