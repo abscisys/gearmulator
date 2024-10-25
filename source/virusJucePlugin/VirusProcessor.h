@@ -14,7 +14,7 @@ namespace virus
 	class VirusProcessor : public jucePluginEditorLib::Processor
 	{
 	public:
-	    VirusProcessor(const BusesProperties& _busesProperties, const juce::PropertiesFile::Options& _configOptions, const pluginLib::Processor::Properties& _properties, const std::vector<virusLib::ROMFile>& _roms, virusLib::DeviceModel _defaultModel);
+	    VirusProcessor(const BusesProperties& _busesProperties, const juce::PropertiesFile::Options& _configOptions, const pluginLib::Processor::Properties& _properties, virusLib::DeviceModel _defaultModel);
 	    ~VirusProcessor() override;
 
 	    void processBpm(float _bpm) override;
@@ -54,7 +54,7 @@ namespace virus
 	    }
 
 	protected:
-	    void postConstruct();
+	    void postConstruct(std::vector<virusLib::ROMFile>&& _roms);
 
 	    // _____________
 		//
@@ -65,6 +65,9 @@ namespace virus
 
 	    void saveChunkData(baseLib::BinaryStream& s) override;
 	    void loadChunkData(baseLib::ChunkReader& _cr) override;
+
+		void zynthianExportLv2Presets() const;
+		void exportLv2Presets(const virusLib::ROMFile& _rom, const std::string& _rootPath) const;
 
 	    //==============================================================================
 		JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VirusProcessor)

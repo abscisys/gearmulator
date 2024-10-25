@@ -1,9 +1,11 @@
 #include "xtState.h"
 
 #include <cassert>
+#include <set>
 
 #include "xtMidiTypes.h"
 #include "xt.h"
+#include "xtWavePreview.h"
 
 #include "synthLib/os.h"
 #include "synthLib/midiToSysex.h"
@@ -15,7 +17,7 @@ namespace xt
 {
 	static_assert(std::size(State::Dumps) == static_cast<uint32_t>(State::DumpType::Count), "data definition missing");
 
-	State::State(Xt& _xt) : m_xt(_xt)
+	State::State(Xt& _xt, WavePreview& _wavePreview) : m_xt(_xt), m_wavePreview(_wavePreview)
 	{
 	}
 
@@ -37,8 +39,74 @@ namespace xt
 
 	bool State::getState(std::vector<uint8_t>& _state, synthLib::StateType _type) const
 	{
-		append(_state, m_mode, ~0);
+		append(_state, m_mode, ~0u);
 		append(_state, m_global, wLib::IdxCommand);
+
+		// add all waves and tables that are used by the singles
+		std::set<TableId> tableIds;
+
+		auto addTableId = [&](TableId id)
+		{
+			if(wave::isReadOnly(id))
+				return false;
+
+			const auto idx = id.rawId();
+			if(idx >= m_tables.size())
+				return false;
+
+			if(!isValid(m_tables[idx]))
+				return false;
+			tableIds.insert(id);
+			return true;
+		};
+
+		for (const auto& s  : m_currentInstrumentSingles)
+		{
+			const auto table = getWavetableFromSingleDump({s.begin(), s.end()});
+			addTableId(table);
+		}
+		for (const auto& s  : m_currentMultiSingles)
+		{
+			const auto table = getWavetableFromSingleDump({s.begin(), s.end()});
+			addTableId(table);
+		}
+
+		std::set<WaveId> waveIds;
+		for (const TableId id : tableIds)
+		{
+			if(wave::isReadOnly(id))
+				continue;
+
+			const auto idx = id.rawId();
+			if(idx >= m_tables.size())
+				continue;
+
+			const auto& t = m_tables[idx];
+			if(!isValid(t))
+				continue;
+
+			TableData table;
+			parseTableData(table, {t.begin(), t.end()});
+
+			for (const auto& waveId : table)
+			{
+				if(wave::isReadOnly(waveId))
+					continue;
+				const auto waveIdx = waveId.rawId();
+				if(waveIdx >= m_waves.size())
+					continue;
+				const auto& wave = m_waves[waveIdx];
+				if(!isValid(wave))
+					continue;
+				waveIds.insert(waveId);
+			}
+		}
+
+		for (const auto& waveId : waveIds)
+			append(_state, m_waves[waveId.rawId()], wLib::IdxCommand);
+
+		for (const auto& tableId : tableIds)
+			append(_state, m_tables[tableId.rawId()], wLib::IdxCommand);
 
 		const auto multiMode = isMultiMode();
 
@@ -149,16 +217,24 @@ namespace xt
 		case SysexCommand::MultiRequest:			return getDump(DumpType::Multi,_responses, _data);
 		case SysexCommand::GlobalRequest:			return getDump(DumpType::Global, _responses, _data);
 		case SysexCommand::ModeRequest:				return getDump(DumpType::Mode, _responses, _data);
+		case SysexCommand::WaveRequest:				return getDump(DumpType::Wave, _responses, _data);
+		case SysexCommand::WaveCtlRequest:			return getDump(DumpType::Table, _responses, _data);
 
 		case SysexCommand::SingleDump:				return parseDump(DumpType::Single, _data);
 		case SysexCommand::MultiDump:				return parseDump(DumpType::Multi, _data);
 		case SysexCommand::GlobalDump:				return parseDump(DumpType::Global, _data);
 		case SysexCommand::ModeDump:				return parseDump(DumpType::Mode, _data);
+		case SysexCommand::WaveDump:				return parseDump(DumpType::Wave, _data);
+		case SysexCommand::WaveCtlDump:				return parseDump(DumpType::Table, _data);
 
 		case SysexCommand::SingleParameterChange:	return modifyDump(DumpType::Single, _data);
 		case SysexCommand::MultiParameterChange:	return modifyDump(DumpType::Multi, _data);
 		case SysexCommand::GlobalParameterChange:	return modifyDump(DumpType::Global, _data);
 		case SysexCommand::ModeParameterChange:		return modifyDump(DumpType::Mode, _data);
+
+		case SysexCommand::WaveDumpP:				return m_wavePreview.receiveWave(_data);
+		case SysexCommand::WaveCtlDumpP:			return m_wavePreview.receiveWaveControlTable(_data);
+		case SysexCommand::WavePreviewMode:			return m_wavePreview.receiveWavePreviewMode(_data);
 
 /*		case SysexCommand::EmuLCD:
 		case SysexCommand::EmuLEDs:
@@ -229,6 +305,16 @@ namespace xt
 		return loadState(_state);
 	}
 
+	TableId State::getWavetableFromSingleDump(const SysEx& _single)
+	{
+		constexpr auto wavetableIndex = IdxSingleParamFirst + static_cast<uint32_t>(SingleParameter::Wavetable);
+
+		if(wavetableIndex >= _single.size())
+			return TableId::invalid();
+
+		return TableId(_single[wavetableIndex]);
+	}
+
 	bool State::parseSingleDump(const SysEx& _data)
 	{
 		Single single;
@@ -274,6 +360,32 @@ namespace xt
 		if(!convertTo(m_mode, _data))
 			return false;
 		onPlayModeChanged();
+		return true;
+	}
+
+	bool State::parseWaveDump(const SysEx& _data)
+	{
+		const auto idx = (static_cast<uint32_t>(_data[IdxWaveIndexH]) << 7u) | static_cast<uint32_t>(_data[IdxWaveIndexL]);
+
+		if(idx >= m_waves.size())
+			return false;
+
+		if(!convertTo(m_waves[idx], _data))
+			return false;
+
+		return true;
+	}
+
+	bool State::parseTableDump(const SysEx& _data)
+	{
+		const auto idx = (static_cast<uint32_t>(_data[IdxWaveIndexH]) << 7u) | static_cast<uint32_t>(_data[IdxWaveIndexL]);
+
+		if(idx >= m_tables.size())
+			return false;
+
+		if(!convertTo(m_tables[idx], _data))
+			return false;
+
 		return true;
 	}
 
@@ -488,7 +600,45 @@ namespace xt
 		return nullptr;
 	}
 
-	bool State::getDump(DumpType _type, Responses& _responses, const SysEx& _data)
+	bool State::getWave(Responses& _responses, const SysEx& _data)
+	{
+		const auto idx = static_cast<uint16_t>((static_cast<uint16_t>(_data[IdxWaveIndexH]) << 7u) | static_cast<uint16_t>(_data[IdxWaveIndexL]));
+
+		auto* w = getWave(WaveId(idx));
+		if(!w || !isValid(*w))
+			return false;
+		_responses.emplace_back(w->begin(), w->end());
+		return true;
+	}
+
+	State::Wave* State::getWave(const WaveId _id)
+	{
+		const auto idx = _id.rawId();
+		if(idx >= m_waves.size())
+			return nullptr;
+		return &m_waves[idx];
+	}
+
+	bool State::getTable(Responses& _responses, const SysEx& _data)
+	{
+		const auto idx = static_cast<uint16_t>((static_cast<uint16_t>(_data[IdxWaveIndexH]) << 7u) | static_cast<uint16_t>(_data[IdxWaveIndexL]));
+
+		auto* t = getTable(TableId(idx));
+		if(!t || !isValid(*t))
+			return false;
+		_responses.emplace_back(t->begin(), t->end());
+		return true;
+	}
+
+	State::Table* State::getTable(const TableId _id)
+	{
+		const auto idx = _id.rawId();
+		if(idx >= m_tables.size())
+			return nullptr;
+		return &m_tables[idx];
+	}
+
+	bool State::getDump(const DumpType _type, Responses& _responses, const SysEx& _data)
 	{
 		bool res;
 
@@ -498,6 +648,8 @@ namespace xt
 		case DumpType::Multi: res = getMulti(_responses, _data); break;
 		case DumpType::Global: res = getGlobal(_responses); break;
 		case DumpType::Mode: res = getMode(_responses); break;
+		case DumpType::Wave: res = getWave(_responses, _data); break;
+		case DumpType::Table: res = getTable(_responses, _data); break;
 		default:
 			return false;
 		}
@@ -516,6 +668,8 @@ namespace xt
 		case DumpType::Multi: res = parseMultiDump(_data); break;
 		case DumpType::Global: res = parseGlobalDump(_data); break;
 		case DumpType::Mode: res = parseModeDump(_data); break;
+		case DumpType::Wave: res = parseWaveDump(_data); break;
+		case DumpType::Table: res = parseTableDump(_data); break;
 		default:
 			return false;
 		}
@@ -698,6 +852,215 @@ namespace xt
 			setInstParam(i, MultiParameter::Inst0MidiRxFlags, 63);	// enable Pitchbend, Modwheel, Aftertouch, Sustain, Button 1/2, Program Change
 		}
 		*/
+	}
+
+	void State::parseWaveData(WaveData& _wave, const SysEx& _sysex)
+	{
+		/*
+			mw2_sysex.pdf:
+
+			"A Wave consists of 128 eight Bit samples, but only the first 64 of them are
+			stored/transmitted, the second half is same as first except the values are
+			negated and the order is reversed:
+
+			Wave[64+n] = -Wave[63-n] for n=0..63
+
+			Note that samples are not two's complement format, to get a signed byte,
+			the most significant bit must be flipped:
+
+			signed char s = Wave[n] ^ 0x80"
+		*/
+
+		constexpr auto off = 7;
+
+		for(uint32_t i=0; i<_wave.size()>>1; ++i)
+		{
+			const auto idx = off + (i<<1);
+			auto sample = (_sysex[idx]) << 4 | _sysex[idx+1];
+			sample = sample ^ 0x80;
+
+			_wave[i] = static_cast<int8_t>(sample);
+			_wave[127-i] = static_cast<int8_t>(-sample);
+		}
+	}
+
+	SysEx State::createWaveData(const WaveData& _wave, const uint16_t _waveIndex, const bool _preview)
+	{
+		const auto hh = static_cast<uint8_t>(_waveIndex >> 7);
+		const auto ll = static_cast<uint8_t>(_waveIndex & 0x7f);
+
+		const std::initializer_list<uint8_t> header{0xf0, wLib::IdWaldorf, IdMw2, wLib::IdDeviceOmni, static_cast<uint8_t>(_preview ? SysexCommand::WaveDumpP : SysexCommand::WaveDump), hh, ll};
+		SysEx sysex{header};
+		sysex.reserve(sysex.size() + _wave.size());
+
+		for(uint32_t i=0; i<_wave.size()>>1; ++i)
+		{
+			const int sample = static_cast<uint8_t>(_wave[i] ^ 0x80);
+
+			sysex.push_back(static_cast<uint8_t>(sample >> 4));
+			sysex.push_back(static_cast<uint8_t>(sample & 0xf));
+		}
+
+		sysex.push_back(0);
+		sysex.push_back(0xf7);
+
+		updateChecksum(sysex, static_cast<uint32_t>(std::size(header)));
+
+		return sysex;
+	}
+
+	WaveData State::createinterpolatedTable(const WaveData& _a, const WaveData& _b, uint16_t _indexA, uint16_t _indexB, uint16_t _indexTarget)
+	{
+		assert(_indexB > _indexA);
+		assert(_indexTarget >= _indexA && _indexTarget <= _indexB);
+
+		xt::WaveData result;
+
+		const auto indexDelta = _indexB - _indexA;
+		const auto targetDelta = _indexTarget - _indexA;
+
+		for(size_t i=0; i<_a.size(); ++i)
+		{
+			auto d = _b[i] - _a[i];
+			d *= targetDelta;
+			d /= indexDelta;
+			d += _a[i];
+			result[i] = static_cast<int8_t>(d);
+		}
+		return result;
+	}
+
+	void State::parseTableData(TableData& _table, const SysEx& _sysex)
+	{
+		constexpr uint32_t off = 7;
+
+		for(uint32_t i=0; i<_table.size(); ++i)
+		{
+			const auto i4 = i<<2;
+
+			auto waveIdx = _sysex[i4+off] << 12;
+			waveIdx |= _sysex[i4+off+1] << 8;
+			waveIdx |= _sysex[i4+off+2] << 4;
+			waveIdx |= _sysex[i4+off+3];
+
+			_table[i] = WaveId(static_cast<uint16_t>(waveIdx));
+		}
+	}
+
+	SysEx State::createTableData(const TableData& _table, const uint32_t _tableIndex, const bool _preview)
+	{
+		const auto hh = static_cast<uint8_t>(_tableIndex >> 7);
+		const auto ll = static_cast<uint8_t>(_tableIndex & 0x7f);
+
+		const std::initializer_list<uint8_t> header{0xf0, wLib::IdWaldorf, IdMw2, wLib::IdDeviceOmni, static_cast<uint8_t>(_preview ? SysexCommand::WaveCtlDumpP : SysexCommand::WaveCtlDump), hh, ll};
+		SysEx sysex{header};
+		sysex.reserve(sysex.size() + _table.size() * 4 + 2);
+
+		for (const auto& e : _table)
+		{
+			const auto waveId = e.rawId();
+
+			sysex.push_back((waveId >> 12) & 0xf);
+			sysex.push_back((waveId >> 8 ) & 0xf);
+			sysex.push_back((waveId >> 4 ) & 0xf);
+			sysex.push_back((waveId      ) & 0xf);
+		}
+
+		sysex.push_back(0);
+		sysex.push_back(0xf7);
+
+		updateChecksum(sysex, static_cast<uint32_t>(std::size(header)));
+
+		return sysex;
+	}
+
+	void State::splitCombinedPatch(std::vector<SysEx>& _dumps, const SysEx& _combinedSingle)
+	{
+		if(getCommand(_combinedSingle) != SysexCommand::SingleDump)
+			return;
+
+		constexpr auto singleSize = std::tuple_size_v<Single>;
+		constexpr auto tableSize = std::tuple_size_v<Table>;
+		constexpr auto waveSize = std::tuple_size_v<Wave>;
+
+		if(_combinedSingle.size() == singleSize)
+			return;
+
+		if(_combinedSingle.size() < singleSize + tableSize - 2)
+			return;
+
+		auto& single = _dumps.emplace_back();
+		size_t offBegin = 0;
+		size_t offEnd = offBegin + singleSize - 1;
+		single.assign(_combinedSingle.begin() + static_cast<ptrdiff_t>(offBegin), _combinedSingle.begin() + static_cast<ptrdiff_t>(offEnd));
+		single.push_back(0xf7);
+
+		auto& table = _dumps.emplace_back();
+
+		offBegin = offEnd;
+		offEnd += tableSize - 2;
+		table.push_back(0xf0);
+		table.insert(table.end(), _combinedSingle.begin() + static_cast<ptrdiff_t>(offBegin), _combinedSingle.begin() + static_cast<ptrdiff_t>(offEnd));
+		table.push_back(0xf7);
+
+		while(_combinedSingle.size() - offEnd >= waveSize - 2)
+		{
+			offBegin = offEnd;
+			offEnd += waveSize - 2;
+
+			auto& wave = _dumps.emplace_back();
+			wave.push_back(0xf0);
+			wave.insert(wave.end(), _combinedSingle.begin() + static_cast<ptrdiff_t>(offBegin), _combinedSingle.begin() + static_cast<ptrdiff_t>(offEnd));
+			wave.push_back(0xf7);
+		}
+	}
+
+	SysEx State::createCombinedPatch(const std::vector<SysEx>& _dumps)
+	{
+		uint32_t singleCount = 0;
+		uint32_t tableCount = 0;
+
+		std::vector<SysEx> waves;
+
+		SysEx single;
+		SysEx table;
+
+		for (auto& dump : _dumps)
+		{
+			switch(getCommand(dump))
+			{
+			case SysexCommand::SingleDump:
+				++singleCount;
+				single = dump;
+				break;
+			case SysexCommand::WaveCtlDump:
+				++tableCount;
+				table = dump;
+				break;
+			case SysexCommand::WaveDump:
+				waves.push_back(dump);
+				break;
+			default:;
+			}
+		}
+
+		if(!tableCount && waves.empty())
+			return single;
+
+		if(tableCount > 1)
+			return {};
+
+		// a combined single is a single dump + a table dump + an arbitrary number of wave dumps in one sysex, i.e. f0/f7 are stripped from the individual dumps
+		single.pop_back();
+
+		single.insert(single.end(), table.begin()+1, table.end());
+
+		for (const auto& wave : waves)
+			single.insert(single.end(), wave.begin()+1, wave.end()-1);
+
+		single.push_back(0xf7);
+
+		return single;
 	}
 
 	void State::onPlayModeChanged()

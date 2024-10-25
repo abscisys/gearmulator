@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "xtId.h"
+
 #include "wLib/wMidiTypes.h"
 
 namespace xt
@@ -26,6 +28,13 @@ namespace xt
 		ModeRequest       = 0x07, ModeDump      = 0x17, ModeParameterChange      = 0x27, ModeStore      = 0x37, ModeRecall      = 0x47, ModeCompare      = 0x57,
 		InfoRequest       = 0x08, InfoDump      = 0x18, InfoParameterChange      = 0x28, InfoStore      = 0x38, InfoRecall      = 0x48, InfoCompare      = 0x58,
 
+		// emu specific, these are to preview waves and wavetables, the dump format is identical to regular wave/wavetable dumps but we modify the DSP memory directly
+		WaveRequestP      = 0x09, WaveDumpP     = 0x19, WaveParameterChangeP     = 0x29, WaveStoreP     = 0x39, WaveRecallP     = 0x49, WaveCompareP     = 0x59,
+		WaveCtlRequestP	  = 0x0a, WaveCtlDumpP  = 0x1a, WaveCtlParameterChangeP  = 0x2a, WaveCtlStoreP  = 0x3a, WaveCtlRecallP  = 0x4a, WaveCtlCompareP  = 0x5a,
+
+		WavePreviewMode = WaveStoreP,
+
+		// emu remote control support
 		EmuLCD = 0x60,
 		EmuLEDs = 0x61,
 		EmuButtons = 0x62,
@@ -71,7 +80,10 @@ namespace xt
 
 		IdxModeParamIndexH = wLib::IdxBuffer,
 		IdxModeParamIndexL = IdxModeParamIndexH,
-		IdxModeParamValue  = wLib::IdxBuffer
+		IdxModeParamValue  = wLib::IdxBuffer,
+
+		IdxWaveIndexH = wLib::IdxBuffer,
+		IdxWaveIndexL = IdxWaveIndexH + 1
 	};
 
 	enum class GlobalParameter
@@ -113,6 +125,12 @@ namespace xt
 	enum class ModeParameter
 	{
 		Mode = 0	// 0 = Single, 1 = Multi
+	};
+
+	enum class SingleParameter
+	{
+		Version = 0,
+		Wavetable = 25
 	};
 
 	enum class MultiParameter
@@ -176,13 +194,15 @@ namespace xt
 		static constexpr uint32_t g_idmPreset = 0x42;
 	};
 
-	namespace Wave
+	namespace wave
 	{
-		static constexpr uint32_t g_romWaveCount = 300;
-		static constexpr uint32_t g_ramWaveCount = 250;
-		static constexpr uint32_t g_firstRamWaveIndex = 1000;
-		static constexpr uint32_t g_tableCount = 128;
-		static constexpr uint32_t g_wavesPerTable = 64;
+		static constexpr uint16_t g_romWaveCount = 506;
+		static constexpr uint16_t g_ramWaveCount = 250;
+		static constexpr uint16_t g_firstRamWaveIndex = 1000;
+
+		static constexpr uint16_t g_tableCount = 128;
+		static constexpr uint16_t g_wavesPerTable = 64;
+		static constexpr uint16_t g_firstRamTableIndex = 96;
 
 		// these are either algorithmic or invalid, we cannot request them via MIDI
 		static constexpr uint32_t g_algorithmicWavetables[] = {28, 29,
@@ -194,7 +214,7 @@ namespace xt
 			80, 81, 82, 83, 84, 85, 86, 87, 88, 89,
 			90, 91, 92, 93, 94, 95};
 
-		inline bool isValidWaveIndex(const uint32_t _index)
+		constexpr bool isValidWaveIndex(const uint32_t _index)
 		{
 			if(_index >= g_firstRamWaveIndex + g_ramWaveCount)
 				return false;
@@ -203,9 +223,38 @@ namespace xt
 			return true;
 		}
 
-		inline bool isValidTableIndex(const uint32_t _index)
+		constexpr bool isValidTableIndex(const uint32_t _index)
 		{
 			return _index < g_tableCount;
+		}
+
+		constexpr bool isAlgorithmicTable(const xt::TableId _index)
+		{
+			for (const uint32_t i : g_algorithmicWavetables)
+			{
+				if(_index.rawId() == i)
+					return true;
+			}
+			return false;
+		}
+
+		constexpr bool isReadOnly(const TableId _table)
+		{
+			if(!_table.isValid())
+				return true;
+			return _table.rawId() < g_firstRamTableIndex;
+		}
+
+		constexpr bool isReadOnly(const WaveId _waveId)
+		{
+			if(!_waveId.isValid())
+				return true;
+			return _waveId.rawId() < g_firstRamWaveIndex;
+		}
+
+		constexpr bool isReadOnly(const TableIndex _index)
+		{
+			return _index.rawId() >= 61;	// always tri/square/saw
 		}
 	}
 }

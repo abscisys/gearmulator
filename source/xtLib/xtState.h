@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include "xtMidiTypes.h"
+#include "xtTypes.h"
 
 #include "synthLib/deviceTypes.h"
 #include "synthLib/midiTypes.h"
@@ -19,6 +20,7 @@ namespace synthLib
 
 namespace xt
 {
+	class WavePreview;
 	class Xt;
 
 	using SysEx = wLib::SysEx;
@@ -39,6 +41,8 @@ namespace xt
 			Multi,
 			Global,
 			Mode,
+			Wave,
+			Table,
 
 			Count
 		};
@@ -58,18 +62,22 @@ namespace xt
 
 		static constexpr Dump Dumps[] = 
 		{
-			{DumpType::Single, SysexCommand::SingleRequest, SysexCommand::SingleDump, SysexCommand::SingleParameterChange, IdxSingleParamFirst, IdxSingleParamIndexH, IdxSingleParamIndexL, IdxSingleParamValue, 265},
-			{DumpType::Multi , SysexCommand::MultiRequest , SysexCommand::MultiDump , SysexCommand::MultiParameterChange , IdxMultiParamFirst , IdxMultiParamIndexH , IdxMultiParamIndexL , IdxMultiParamValue , 265},
-			{DumpType::Global, SysexCommand::GlobalRequest, SysexCommand::GlobalDump, SysexCommand::GlobalParameterChange, IdxGlobalParamFirst, IdxGlobalParamIndexH, IdxGlobalParamIndexL, IdxGlobalParamValue, 39},
-			{DumpType::Mode  , SysexCommand::ModeRequest  , SysexCommand::ModeDump  , SysexCommand::ModeParameterChange  , IdxModeParamFirst  , IdxModeParamIndexH  , IdxModeParamIndexL  , IdxModeParamValue  , 7},
+			{DumpType::Single, SysexCommand::SingleRequest , SysexCommand::SingleDump , SysexCommand::SingleParameterChange , IdxSingleParamFirst, IdxSingleParamIndexH, IdxSingleParamIndexL, IdxSingleParamValue, 265},
+			{DumpType::Multi , SysexCommand::MultiRequest  , SysexCommand::MultiDump  , SysexCommand::MultiParameterChange  , IdxMultiParamFirst , IdxMultiParamIndexH , IdxMultiParamIndexL , IdxMultiParamValue , 265},
+			{DumpType::Global, SysexCommand::GlobalRequest , SysexCommand::GlobalDump , SysexCommand::GlobalParameterChange , IdxGlobalParamFirst, IdxGlobalParamIndexH, IdxGlobalParamIndexL, IdxGlobalParamValue, 39},
+			{DumpType::Mode  , SysexCommand::ModeRequest   , SysexCommand::ModeDump   , SysexCommand::ModeParameterChange   , IdxModeParamFirst  , IdxModeParamIndexH  , IdxModeParamIndexL  , IdxModeParamValue  , 7},
+			{DumpType::Wave  , SysexCommand::WaveRequest   , SysexCommand::WaveDump   , SysexCommand::WaveParameterChange   , wLib::IdxBuffer    , IdxWaveIndexH       , IdxWaveIndexL       , wLib::IdxBuffer    , 137},
+			{DumpType::Table , SysexCommand::WaveCtlRequest, SysexCommand::WaveCtlDump, SysexCommand::WaveCtlParameterChange, wLib::IdxBuffer    , IdxWaveIndexH       , IdxWaveIndexL       , wLib::IdxBuffer    , 265},
 		};
 
 		using Single = std::array<uint8_t, Dumps[static_cast<uint32_t>(DumpType::Single)].dumpSize>;
-		using Multi = std::array<uint8_t, Dumps[static_cast<uint32_t>(DumpType::Multi)].dumpSize>;
+		using Multi = std::array<uint8_t , Dumps[static_cast<uint32_t>(DumpType::Multi) ].dumpSize>;
 		using Global = std::array<uint8_t, Dumps[static_cast<uint32_t>(DumpType::Global)].dumpSize>;
-		using Mode = std::array<uint8_t, Dumps[static_cast<uint32_t>(DumpType::Mode)].dumpSize>;
+		using Mode = std::array<uint8_t  , Dumps[static_cast<uint32_t>(DumpType::Mode)  ].dumpSize>;
+		using Wave = std::array<uint8_t  , Dumps[static_cast<uint32_t>(DumpType::Wave)  ].dumpSize>;
+		using Table = std::array<uint8_t , Dumps[static_cast<uint32_t>(DumpType::Table) ].dumpSize>;
 
-		State(Xt& _xt);
+		State(Xt& _xt, WavePreview& _wavePreview);
 
 		bool loadState(const SysEx& _sysex);
 
@@ -80,7 +88,19 @@ namespace xt
 		bool getState(std::vector<uint8_t>& _state, synthLib::StateType _type) const;
 		bool setState(const std::vector<uint8_t>& _state, synthLib::StateType _type);
 
+		static TableId getWavetableFromSingleDump(const SysEx& _single);
+
 		static void createSequencerMultiData(std::vector<uint8_t>& _data);
+
+		static void parseWaveData(WaveData& _wave, const SysEx& _sysex);
+		static SysEx createWaveData(const WaveData& _wave, uint16_t _waveIndex, bool _preview);
+		static WaveData createinterpolatedTable(const WaveData& _a, const WaveData& _b, uint16_t _indexA, uint16_t _indexB, uint16_t _indexTarget);
+
+		static void parseTableData(TableData& _table, const SysEx& _sysex);
+		static SysEx createTableData(const TableData& _table, uint32_t _tableIndex, bool _preview);
+
+		static SysEx createCombinedPatch(const std::vector<SysEx>& _dumps);
+		static void splitCombinedPatch(std::vector<SysEx>& _dumps, const SysEx& _combinedSingle);
 
 	private:
 
@@ -89,7 +109,7 @@ namespace xt
 			if(!isValid(_src))
 				return false;
 			auto src = _src;
-			if(_checksumStartIndex != ~0)
+			if(_checksumStartIndex != ~0u)
 				wLib::State::updateChecksum(src, _checksumStartIndex);
 			_dst.insert(_dst.end(), src.begin(), src.end());
 			return true;
@@ -111,6 +131,8 @@ namespace xt
 		bool parseMultiDump(const SysEx& _data);
 		bool parseGlobalDump(const SysEx& _data);
 		bool parseModeDump(const SysEx& _data);
+		bool parseWaveDump(const SysEx& _data);
+		bool parseTableDump(const SysEx& _data);
 
 		bool modifySingle(const SysEx& _data);
 		bool modifyMulti(const SysEx& _data);
@@ -134,6 +156,12 @@ namespace xt
 		bool getMode(Responses& _responses);
 		Mode* getMode();
 
+		bool getWave(Responses& _responses, const SysEx& _data);
+		Wave* getWave(WaveId _id);
+
+		bool getTable(Responses& _responses, const SysEx& _data);
+		Table* getTable(TableId _id);
+
 		bool getDump(DumpType _type, Responses& _responses, const SysEx& _data);
 		bool parseDump(DumpType _type, const SysEx& _data);
 		bool modifyDump(DumpType _type, const SysEx& _data);
@@ -149,6 +177,11 @@ namespace xt
 		}
 
 		static bool isValid(const Single& _single)
+		{
+			return _single.front() == 0xf0;
+		}
+
+		static bool isValid(const Wave& _single)
 		{
 			return _single.front() == 0xf0;
 		}
@@ -185,6 +218,10 @@ namespace xt
 		std::array<Single, 256> m_romSingles{Single{}};
 		std::array<Multi, 128> m_romMultis{Multi{}};
 
+		// User Waves and Tables
+		std::array<Wave, xt::wave::g_firstRamWaveIndex + xt::wave::g_ramWaveCount> m_waves{Wave{}};
+		std::array<Table, xt::wave::g_tableCount> m_tables{Table{}};
+
 		// Edit Buffers
 		std::array<Single, 8> m_currentMultiSingles{Single{}};
 		std::array<Single, 1> m_currentInstrumentSingles{Single{}};
@@ -197,6 +234,9 @@ namespace xt
 		// current state, valid while receiving data
 		Origin m_sender = Origin::External;
 		bool m_isEditBuffer = false;
+
+		// Emulator specific: preview wave editing
+		WavePreview& m_wavePreview;
 
 		synthLib::SMidiEvent m_lastBankSelectMSB;
 		synthLib::SMidiEvent m_lastBankSelectLSB;

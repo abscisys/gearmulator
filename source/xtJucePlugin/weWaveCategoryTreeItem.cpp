@@ -21,10 +21,10 @@ namespace xtJucePlugin
 		switch (_category)
 		{
 		case WaveCategory::Rom:
-			addItems(0, xt::Wave::g_romWaveCount);
+			addItems(0, xt::wave::g_romWaveCount);
 			break;
 		case WaveCategory::User:
-			addItems(xt::Wave::g_firstRamWaveIndex, xt::Wave::g_ramWaveCount);
+			addItems(xt::wave::g_firstRamWaveIndex, xt::wave::g_ramWaveCount);
 			break;
 		case WaveCategory::Invalid:
 		case WaveCategory::Plugin:
@@ -32,6 +32,22 @@ namespace xtJucePlugin
 		default:
 			break;
 		}
+	}
+
+	bool WaveCategoryTreeItem::setSelectedWave(const xt::WaveId _id)
+	{
+		for(int i=0; i<getNumSubItems(); ++i)
+		{
+			auto* subItem = dynamic_cast<WaveTreeItem*>(getSubItem(i));
+			if(subItem && subItem->getWaveId() == _id)
+			{
+				subItem->setSelected(true, true, juce::dontSendNotification);
+				setOpen(true);
+				getOwnerView()->scrollToKeepItemVisible(subItem);
+				return true;
+			}
+		}
+		return false;
 	}
 
 	std::string WaveCategoryTreeItem::getCategoryName(WaveCategory _category)
@@ -49,6 +65,6 @@ namespace xtJucePlugin
 
 	void WaveCategoryTreeItem::addItem(const uint32_t _index)
 	{
-		addSubItem(new WaveTreeItem(m_editor, m_category, _index));
+		addSubItem(new WaveTreeItem(m_editor, m_category, xt::WaveId(_index)));
 	}
 }

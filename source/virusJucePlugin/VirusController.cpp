@@ -83,11 +83,19 @@ namespace virus
 
     Controller::~Controller() = default;
 
-    bool Controller::parseSysexMessage(const pluginLib::SysEx& _msg, synthLib::MidiEventSource)
+    bool Controller::parseSysexMessage(const pluginLib::SysEx& _msg, synthLib::MidiEventSource _source)
 	{
         std::string name;
     	pluginLib::MidiPacket::Data data;
         pluginLib::MidiPacket::ParamValues parameterValues;
+
+		if(_msg.size() > 6 && _msg[6] == virusLib::DUMP_EMU_SYNTHSTATE)
+		{
+			if(!m_frontpanelState.fromMidiEvent(_msg))
+				return false;
+			onFrontPanelStateChanged(m_frontpanelState);
+			return true;
+		}
 
         if(parseMidiPacket(name,  data, parameterValues, _msg))
         {
@@ -101,7 +109,12 @@ namespace virus
             else if(name == midiPacketName(MidiPacketType::MultiDump))
                 parseMulti(_msg, data, parameterValues);
             else if(name == midiPacketName(MidiPacketType::ParameterChange))
-                parseParamChange(data);
+            {
+				// TI DSP sends parameter changes back as sysex, unsure why. Ignore them as it stops
+				// host automation because the host thinks we "edit" the parameter
+				if(_source != synthLib::MidiEventSource::Plugin)
+	                parseParamChange(data);
+            }
             else
             {
 		        LOG("Controller: Begin unhandled SysEx! --");

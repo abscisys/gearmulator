@@ -65,6 +65,7 @@ namespace xtJucePlugin
 
 		bool sendSysEx(MidiPacketType _type) const;
 		bool sendSysEx(MidiPacketType _type, std::map<pluginLib::MidiDataType, uint8_t>& _params) const;
+		using pluginLib::Controller::sendSysEx;
 
 		bool isMultiMode() const;
 		void setPlayMode(bool _multiMode);
@@ -90,11 +91,12 @@ namespace xtJucePlugin
 		bool requestWave(uint32_t _number) const;
 		bool requestTable(uint32_t _number) const;
 
+		uint8_t getPartCount() const override;
+
 	private:
 		void selectPreset(int _offset);
 
 		void onStateLoaded() override;
-		uint8_t getPartCount() const override;
 
 		void parseSingle(const pluginLib::SysEx& _msg, const pluginLib::MidiPacket::Data& _data, const pluginLib::MidiPacket::ParamValues& _params);
 		void parseMulti(const pluginLib::SysEx& _msg, const pluginLib::MidiPacket::Data& _data, const pluginLib::MidiPacket::ParamValues& _params) const;

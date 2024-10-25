@@ -7,13 +7,13 @@
 #include "baseLib/binarystream.h"
 
 #include "synthLib/deviceException.h"
+#include "synthLib/lv2PresetExport.h"
 #include "synthLib/os.h"
 
 namespace virus
 {
-	VirusProcessor::VirusProcessor(const BusesProperties& _busesProperties, const juce::PropertiesFile::Options& _configOptions, const pluginLib::Processor::Properties& _properties, const std::vector<virusLib::ROMFile>& _roms, const virusLib::DeviceModel _defaultModel)
+	VirusProcessor::VirusProcessor(const BusesProperties& _busesProperties, const juce::PropertiesFile::Options& _configOptions, const pluginLib::Processor::Properties& _properties, const virusLib::DeviceModel _defaultModel)
 		: Processor(_busesProperties, _configOptions, _properties)
-		, m_roms(_roms)
 		, m_defaultModel(_defaultModel)
 	{
 	}
@@ -55,6 +55,8 @@ namespace virus
 
 			evRomChanged.retain(getSelectedRom());
 
+			zynthianExportLv2Presets();
+
 			return true;
 		}
 		catch(const synthLib::DeviceException& e)
@@ -68,14 +70,18 @@ namespace virus
 		}
 	}
 
-	void VirusProcessor::postConstruct()
+	void VirusProcessor::postConstruct(std::vector<virusLib::ROMFile>&& _roms)
 	{
+		m_roms = std::move(_roms);
+
 		evRomChanged.retain(getSelectedRom());
 
 		m_clockTempoParam = getController().getParameterIndexByName(virus::g_paramClockTempo);
 
 		const auto latencyBlocks = getConfig().getIntValue("latencyBlocks", static_cast<int>(getPlugin().getLatencyBlocks()));
 		Processor::setLatencyBlocks(latencyBlocks);
+
+		zynthianExportLv2Presets();
 	}
 
 	synthLib::Device* VirusProcessor::createDevice()
@@ -133,5 +139,70 @@ namespace virus
 		});
 
 		Processor::loadChunkData(_cr);
+	}
+
+	void VirusProcessor::zynthianExportLv2Presets() const
+	{
+		const auto* rom = getSelectedRom();
+		if(!rom)
+			return;
+
+#ifdef ZYNTHIAN
+		constexpr const char* const rootPath = "/zynthian/zynthian-my-data/presets/lv2";
+		exportLv2Presets(*rom, rootPath);
+#elif defined(_WIN32) && defined(_DEBUG)
+//		const auto rootPath = synthLib::getModulePath();
+//		exportLv2Presets(*rom, rootPath);
+#endif
+	}
+
+	void VirusProcessor::exportLv2Presets(const virusLib::ROMFile& _rom, const std::string& _rootPath) const
+	{
+		const auto bankCount = virusLib::ROMFile::getRomBankCount(_rom.getModel());
+
+		for(uint32_t b=0; b<bankCount; ++b)
+		{
+			synthLib::Lv2PresetExport::Bank bank;
+
+			switch (_rom.getModel())
+			{
+			case virusLib::DeviceModel::A:
+			case virusLib::DeviceModel::B:
+			case virusLib::DeviceModel::C:				bank.name = std::string("Rom "     ) + static_cast<char>('C' + b);	break;
+			case virusLib::DeviceModel::Snow:			bank.name = std::string("Snow Rom ") + static_cast<char>('A' + b);	break;
+			case virusLib::DeviceModel::TI:				bank.name = std::string("TI Rom "  ) + static_cast<char>('A' + b);	break;
+			case virusLib::DeviceModel::TI2:			bank.name = std::string("TI2 Rom " ) + static_cast<char>('A' + b);	break;
+			case virusLib::DeviceModel::Invalid:		bank.name = std::string("Unknown " ) + static_cast<char>('A' + b);	assert(false); break;
+			}
+
+			const auto path = synthLib::validatePath(_rootPath) + getProperties().name + '_' + synthLib::Lv2PresetExport::getBankFilename(bank.name) + ".lv2/";
+
+			if(synthLib::Lv2PresetExport::manifestFileExists(path))
+				continue;
+
+			for(uint8_t p=0; p<_rom.getPresetsPerBank(); ++p)
+			{
+				virusLib::ROMFile::TPreset preset;
+
+				if(!_rom.getSingle(static_cast<uint8_t>(b), p, preset))
+					continue;
+
+				synthLib::Lv2PresetExport::Preset lv2Preset;
+
+				lv2Preset.data = {0xf0, 0x00, 0x20, 0x33, 01, virusLib::OMNI_DEVICE_ID, virusLib::DUMP_SINGLE, virusLib::toMidiByte(virusLib::BankNumber::EditBuffer), virusLib::SINGLE};
+				lv2Preset.data.insert(lv2Preset.data.end(), preset.begin(), preset.begin() + virusLib::ROMFile::getSinglePresetSize(_rom.getModel()));
+				lv2Preset.data.push_back(virusLib::Microcontroller::calcChecksum(lv2Preset.data, 5));
+				lv2Preset.data.push_back(0xf7);
+
+				lv2Preset.name = virusLib::ROMFile::getSingleName(preset);
+
+				bank.presets.push_back(lv2Preset);
+			}
+
+			if(bank.presets.empty())
+				continue;
+
+			synthLib::Lv2PresetExport::exportPresets(path, getProperties().lv2Uri, bank);
+		}
 	}
 }

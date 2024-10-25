@@ -110,6 +110,34 @@ namespace xtJucePlugin
 
 		auto data = _sysex;
 
+		if(_sysex.size() > std::tuple_size_v<xt::State::Single>)
+		{
+			// split a combined single into single, table, waves and send all of them
+			std::vector<xt::SysEx> splitResults;
+			xt::State::splitCombinedPatch(splitResults, _sysex);
+
+			if(!splitResults.empty())
+			{
+				const auto& single = splitResults.front();
+
+				if(m_waveEditor)
+				{
+					// send waves first, then table. otherwise the device doesn't refresh correctly
+					const auto& table = splitResults[1];
+
+					for(size_t i=2; i<splitResults.size(); ++i)
+					{
+						const auto& wave = splitResults[i];
+						m_waveEditor->getData().onReceiveWave(wave, true);
+					}
+
+					m_waveEditor->getData().onReceiveTable(table, true);
+				}
+
+				data = single;
+			}
+		}
+
 		data[wLib::IdxBuffer] = static_cast<uint8_t>(isMultiMode() ? xt::LocationH::SingleEditBufferMultiMode : xt::LocationH::SingleEditBufferSingleMode);
 		data[wLib::IdxLocation] = isMultiMode() ? _part : 0;
 		data[wLib::IdxDeviceId] = m_deviceId;
@@ -254,6 +282,12 @@ namespace xtJucePlugin
 		if(bank == static_cast<uint8_t>(xt::LocationH::MultiDumpMultiEditBuffer))
 		{
 			applyPatchParameters(_params, 0);
+
+			if(isMultiMode())
+			{
+				// requst first single. The other singles 1-7 are requested one after the other after a single has been received
+				requestSingle(xt::LocationH::SingleEditBufferMultiMode, 0);
+			}
 		}
 	}
 
@@ -619,7 +653,7 @@ namespace xtJucePlugin
 
 	bool Controller::requestWave(const uint32_t _number) const
 	{
-		if(!xt::Wave::isValidWaveIndex(_number))
+		if(!xt::wave::isValidWaveIndex(_number))
 			return false;
 
 		std::map<pluginLib::MidiDataType, uint8_t> params;
@@ -632,7 +666,7 @@ namespace xtJucePlugin
 
 	bool Controller::requestTable(const uint32_t _number) const
 	{
-		if(!xt::Wave::isValidTableIndex(_number))
+		if(!xt::wave::isValidTableIndex(_number))
 			return false;
 
 		std::map<pluginLib::MidiDataType, uint8_t> params;
@@ -676,9 +710,6 @@ namespace xtJucePlugin
 		if (isMultiMode())
 		{
 			requestMulti(xt::LocationH::MultiDumpMultiEditBuffer, 0);
-
-			// the other singles 1-7 are requested one after the other after a single has been received
-			requestSingle(xt::LocationH::SingleEditBufferMultiMode, 0);
 		}
 		else
 		{

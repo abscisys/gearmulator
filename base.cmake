@@ -61,12 +61,31 @@ elseif(APPLE)
 else()
 	message("CMAKE_SYSTEM_PROCESSOR: " ${CMAKE_SYSTEM_PROCESSOR})
 	message("CMAKE_HOST_SYSTEM_PROCESSOR: " ${CMAKE_HOST_SYSTEM_PROCESSOR})
+
 	if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES arm AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES aarch64)
 		string(APPEND CMAKE_CXX_FLAGS " -msse")
 	endif()
+
+	# GCC <= 11 has LTO issues
+	if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS_EQUAL 11.4)
+		message(WARNING "LTO disabled due to GCC version <= 11.4.0 causing issues")
+	else()
+		cmake_policy(SET CMP0069 NEW)
+		include(CheckIPOSupported)
+
+		check_ipo_supported(RESULT result)
+		if(result)
+			message(STATUS "IPO is supported")
+			set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+		else()
+			message(WARNING "IPO is not supported")
+		endif()
+	endif()
+
 	string(APPEND CMAKE_C_FLAGS_RELEASE " -Ofast -fno-stack-protector")
 	string(APPEND CMAKE_CXX_FLAGS_RELEASE " -Ofast -fno-stack-protector")
 	string(APPEND CMAKE_CXX_FLAGS_DEBUG " -rdynamic")
+
 	execute_process(COMMAND uname -m COMMAND tr -d '\n' OUTPUT_VARIABLE ARCHITECTURE)
 
 	# Good atomics are important on aarch64, they exist on ARMv8.1a or higher
