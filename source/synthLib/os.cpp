@@ -8,6 +8,7 @@
 #define USE_DIRENT
 #include <cstdlib>
 #include <cstring>
+#include <pwd.h>
 #endif
 
 #ifdef USE_DIRENT
@@ -40,7 +41,14 @@
 
 namespace synthLib
 {
-    std::string getModulePath(bool _stripPluginComponentFolders/* = true*/)
+#ifdef _WIN32
+	constexpr char g_nativePathSeparator = '\\';
+#else
+	constexpr char g_nativePathSeparator = '/';
+#endif
+	constexpr char g_otherPathSeparator = g_nativePathSeparator == '\\' ? '/' : '\\';
+
+	std::string getModulePath(bool _stripPluginComponentFolders/* = true*/)
     {
         std::string path;
 #ifdef _WIN32
@@ -119,7 +127,16 @@ namespace synthLib
     bool createDirectory(const std::string& _dir)
     {
 #ifdef USE_DIRENT
-        return mkdir(_dir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) == 0;
+		constexpr auto dirAttribs = S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH;
+		for(size_t i=0; i<_dir.size(); ++i)
+		{
+			if(_dir[i] == '/' || _dir[i] == '\\')
+			{
+				const auto d = _dir.substr(0,i);
+		        mkdir(d.c_str(), dirAttribs);
+			}
+		}
+        return mkdir(_dir.c_str(), dirAttribs) == 0;
 #else
         return std::filesystem::create_directories(_dir);
 #endif
@@ -129,9 +146,17 @@ namespace synthLib
     {
         if(_path.empty())
             return _path;
-        if(_path.back() == '/' || _path.back() == '\\')
+
+        for (char& ch : _path)
+        {
+	        if(ch == g_otherPathSeparator)
+				ch = g_nativePathSeparator;
+        }
+
+		if(_path.back() == g_nativePathSeparator)
             return _path;
-        _path += '/';
+
+        _path += g_nativePathSeparator;
         return _path;
     }
 
@@ -162,6 +187,7 @@ namespace synthLib
         }
         else
         {
+            LOG("Failed to open directory " << _folder << ", error " << errno);
             return false;
         }
 #else
@@ -416,6 +442,35 @@ namespace synthLib
 #endif
    	}
 
+    std::string getHomeDirectory()
+    {
+#ifdef _WIN32
+		std::array<char, MAX_PATH<<1> data;
+		if (SHGetSpecialFolderPathA (nullptr, data.data(), CSIDL_PROFILE, FALSE))
+			return validatePath(data.data());
+
+	    const auto* home = getenv("USERPROFILE");
+		if (home)
+			return home;
+
+		const auto* drive = getenv("HOMEDRIVE");
+		const auto* path = getenv("HOMEPATH");
+
+		if (drive && path)
+			return std::string(drive) + std::string(path);
+
+		return "C:\\Users\\Default";			// meh, what can we do?
+#else
+		const char* home = getenv("HOME");
+		if (home && strlen(home) > 0)
+			return home;
+        const auto* pw = getpwuid(getuid());
+		if(pw)
+			return std::string(pw->pw_dir);
+		return "/tmp";							// better ideas welcome
+#endif
+    }
+
     std::string getSpecialFolderPath(const SpecialFolderType _type)
     {
 #ifdef _WIN32
@@ -435,13 +490,17 @@ namespace synthLib
 		}
 		if (SHGetSpecialFolderPathA (nullptr, path.data(), csidl, FALSE))
 			return validatePath(path.data());
-#elif defined(__APPLE__)
+#else
+		const auto h = std::getenv("HOME");
+		const std::string home = validatePath(getHomeDirectory());
+
+#if defined(__APPLE__)
 		switch (_type)
 		{
 		case SpecialFolderType::UserDocuments:
-			return "~/Documents/";
+			return home + "Documents/";
 		case SpecialFolderType::PrivateAppData:
-			return "~/Library/Application Support/";
+			return home + "Library/Application Support/";
 		default:
 			return {};
 		}
@@ -454,18 +513,19 @@ namespace synthLib
 				const auto* docDir = std::getenv("XDG_DATA_HOME");
 				if(docDir && strlen(docDir) > 0)
 					return validatePath(docDir);
-				return "~/.local/share/";
+				return home + ".local/share/";
 			}
 		case SpecialFolderType::PrivateAppData:
 			{
 				const auto* confDir = std::getenv("XDG_CONFIG_HOME");
 				if(confDir && strlen(confDir) > 0)
 					return validatePath(confDir);
-				return "~/.config/";
+				return home + ".config/";
 			}
 		default:
 			return {};
 		}
+#endif
 #endif
 		return {};
     }
